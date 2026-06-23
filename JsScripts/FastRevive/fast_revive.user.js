@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         Fast Revives
 // @namespace    http://tampermonkey.net/
-// @version      3.0.2
+// @version      3.0.3
 // @description  Attempts to auto-confirm revives based on user-defined success chance threshold on profile and hospital pages. Supports blocking early discharge revives on hospital.
 // @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
 // @match        https://www.torn.com/hospitalview.php*
+// @updateURL    https://raw.githubusercontent.com/KAwasthi2889/Public-Scripts/main/JsScripts/FastRevive/fast_revive.user.js
+// @downloadURL  https://raw.githubusercontent.com/KAwasthi2889/Public-Scripts/main/JsScripts/FastRevive/fast_revive.user.js
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=torn.com
 // @license      MIT
 // @grant        none
