@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fast Revives
 // @namespace    http://tampermonkey.net/
-// @version      3.1.1
-// @description  Attempts to auto-confirm revives based on user-defined success chance threshold on profile and hospital pages. Supports blocking early discharge revives on hospital.
+// @version      3.2.1
+// @description  Attempts to auto-confirm revives based on user-defined success chance threshold on profile and hospital pages. Auto closes the tab. Supports blocking early discharge revives on hospital. Returns success for succesful revive or reason for failed revive.
 // @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
 // @match        https://www.torn.com/hospitalview.php*
@@ -70,17 +70,29 @@
         const watchForSuccessAndClose = () => {
             if (!isAutoReviveTab) return;
 
+            // Extract XID from URL to send back to the gateway
+            const xid = new URLSearchParams(window.location.search).get("XID");
+
             let successFound = false;
             // Close the tab 10s from now regardless of success/failure
             setTimeout(() => window.close(), 10000);
 
             const successObserver = new MutationObserver((m, obs) => {
-                if (document.body.textContent.includes("successfully revived")) {
-                    successFound = true;
-                    if (cbport) {
-                        new Image().src = `http://localhost:${cbport}/revive`;
-                        console.log(`[FastRevive] Success detected, callback fired to port ${cbport}`);
+                // Look for the specific Torn response container
+                const responseTextEl = document.querySelector('.profile-buttons-dialog .center-block .text');
+                
+                if (responseTextEl) {
+                    const text = responseTextEl.textContent.trim();
+                    const isSuccess = responseTextEl.classList.contains('t-green') || text.includes('successfully revived');
+                    
+                    if (cbport && xid) {
+                        const status = isSuccess ? 'success' : 'fail';
+                        const reason = isSuccess ? '' : encodeURIComponent(text);
+                        new Image().src = `http://localhost:${cbport}/revive?xid=${xid}&status=${status}&reason=${reason}`;
+                        console.log(`[FastRevive] Callback fired to port ${cbport}: status=${status}`);
                     }
+                    
+                    successFound = true;
                     obs.disconnect();
                 }
             });
