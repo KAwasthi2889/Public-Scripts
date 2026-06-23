@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fast Revives
 // @namespace    http://tampermonkey.net/
-// @version      3.0.3
+// @version      3.1.1
 // @description  Attempts to auto-confirm revives based on user-defined success chance threshold on profile and hospital pages. Supports blocking early discharge revives on hospital.
 // @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
@@ -17,6 +17,8 @@
     'use strict';
 
     let isConfirming = false;
+    let isAutoReviveTab = false;
+    let cbport = null;
     const resetConfirming = () => { isConfirming = false; };
 
     // Default settings with safe parsing
@@ -65,6 +67,35 @@
     function autoConfirmRevive(mutations) {
         if (isConfirming) return;
 
+        const watchForSuccessAndClose = () => {
+            if (!isAutoReviveTab) return;
+
+            let successFound = false;
+            // Close the tab 10s from now regardless of success/failure
+            setTimeout(() => window.close(), 10000);
+
+            const successObserver = new MutationObserver((m, obs) => {
+                if (document.body.textContent.includes("successfully revived")) {
+                    successFound = true;
+                    if (cbport) {
+                        new Image().src = `http://localhost:${cbport}/revive`;
+                        console.log(`[FastRevive] Success detected, callback fired to port ${cbport}`);
+                    }
+                    obs.disconnect();
+                }
+            });
+
+            successObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+            // Stop observing after 5 seconds if not found
+            setTimeout(() => {
+                successObserver.disconnect();
+                if (!successFound) {
+                    console.log('[FastRevive] Success message not found within 5s.');
+                }
+            }, 5000);
+        };
+
         if (isHospital) {
             // On hospital, we need to find which list item opened the confirmation
             // The MutationObserver triggers when the dialog is shown. We look for a visible .confirm-revive
@@ -99,6 +130,10 @@
                 if (reviveInfo.chance !== null && reviveInfo.chance >= settings.threshold) {
                     isConfirming = true;
                     yesButton.click();
+                    
+                    if (isAutoReviveTab) {
+                        watchForSuccessAndClose();
+                    }
 
                     setTimeout(resetConfirming, 500);
                 }
@@ -223,17 +258,29 @@
 
     // Profile-only revive triggering
     if (!isHospital) {
+        // Fix hash bug: save hash before modifying history
+        const savedHash = window.location.hash;
+        
         // Check if the page was opened by the gateway (URL contains #autorevive)
-        const isAutoRevive = window.location.hash.includes('autorevive');
+        isAutoReviveTab = savedHash.includes('autorevive');
 
-        if (isAutoRevive) {
+        if (isAutoReviveTab) {
+            // Master fallback timeout: close tab after 30s no matter what
+            setTimeout(() => window.close(), 30000);
+
             // Fix #6: Strip the hash immediately so F5/refresh won't re-trigger
             history.replaceState(null, '', window.location.pathname + window.location.search);
+
+            // Parse callback port
+            const portMatch = savedHash.match(/cbport=(\d+)/);
+            if (portMatch) {
+                cbport = parseInt(portMatch[1], 10);
+            }
 
             // Minimum account age (in days) required for auto-revive.
             // Parse from hash (e.g. #autorevive=250), default to 365 if missing or invalid.
             let MIN_AGE_DAYS = 365;
-            const hashMatch = window.location.hash.match(/autorevive=(\d+)/);
+            const hashMatch = savedHash.match(/autorevive=(\d+)/);
             if (hashMatch) {
                 const parsedAge = parseInt(hashMatch[1], 10);
                 if (!isNaN(parsedAge) && parsedAge > 0) {
@@ -287,6 +334,7 @@
                     if (ageDays !== null && ageDays < MIN_AGE_DAYS) {
                         // Newbie player — skip auto-revive, R key still works for manual override
                         console.log(`[FastRevive] Skipped auto-revive — player age ${ageDays} days is under ${MIN_AGE_DAYS} day minimum.`);
+                        setTimeout(() => window.close(), 10000); // Close tab after 10s
                         return;
                     }
 
@@ -313,6 +361,7 @@
                 setTimeout(() => {
                     autoReviveObserver.disconnect();
                     console.log('[FastRevive] Auto-revive timed out — revive button not found.');
+                    window.close(); // Close immediately if button never appeared
                 }, 10000);
             }
         }
