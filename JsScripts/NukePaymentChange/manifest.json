@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Nuke Payment Status",
+  "version": "1.0",
+  "description": "Browser extension to run payment-status script with a configuration UI.",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://nuke.family/*"
+  ]
+}

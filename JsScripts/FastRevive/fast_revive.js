@@ -1,0 +1,343 @@
+// ==UserScript==
+// @name         Fast Revives
+// @namespace    http://tampermonkey.net/
+// @version      3.0.2
+// @description  Attempts to auto-confirm revives based on user-defined success chance threshold on profile and hospital pages. Supports blocking early discharge revives on hospital.
+// @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
+// @match        https://www.torn.com/profiles.php*
+// @match        https://www.torn.com/hospitalview.php*
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=torn.com
+// @license      MIT
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    let isConfirming = false;
+    const resetConfirming = () => { isConfirming = false; };
+
+    // Default settings with safe parsing
+    let settings = {
+        threshold: 60,
+        blockEarlyDischarge: true
+    };
+    try {
+        const stored = localStorage.getItem('fastReviveSettings');
+        if (stored) {
+            settings = JSON.parse(stored);
+        }
+    } catch (e) {
+        console.warn('[FastRevive] Corrupted settings found in localStorage. Reverting to defaults.', e);
+        // Overwrite the corrupted data
+        localStorage.setItem('fastReviveSettings', JSON.stringify(settings));
+    }
+
+    function saveSettings() {
+        localStorage.setItem('fastReviveSettings', JSON.stringify(settings));
+    }
+
+    const isHospital = window.location.href.includes("hospitalview.php");
+
+    // Utility function to parse success chance and early discharge info from a specific container
+    function getReviveInfo(container = document.body) {
+        // Find the active confirm dialog text
+        let pageText = "";
+        const confirmDialog = container.querySelector('.confirm-revive');
+
+        if (confirmDialog) {
+            pageText = confirmDialog.innerText || confirmDialog.textContent;
+        } else {
+            // Fallback for profile where there might not be a specific .confirm-revive container
+            pageText = container.innerText || container.textContent;
+        }
+
+        const match = pageText.match(/(\d+(?:\.\d+)?)% chance of success/);
+        const chance = match ? parseFloat(match[1]) : null;
+        const isEarlyDischarge = pageText.includes("Early Discharge");
+
+        return { chance, isEarlyDischarge };
+    }
+
+    // Automatically click "Yes" if the success chance meets the threshold and early discharge rules
+    function autoConfirmRevive(mutations) {
+        if (isConfirming) return;
+
+        if (isHospital) {
+            // On hospital, we need to find which list item opened the confirmation
+            // The MutationObserver triggers when the dialog is shown. We look for a visible .confirm-revive
+            const listItems = document.querySelectorAll('.user-info-list-wrap li');
+            for (const li of listItems) {
+                const confirmRevive = li.querySelector('.confirm-revive');
+                if (confirmRevive && getComputedStyle(confirmRevive).display !== 'none') {
+                    const yesButton = li.querySelector('.action-yes');
+                    if (yesButton) {
+                        const reviveInfo = getReviveInfo(li);
+                        if (reviveInfo.chance !== null && reviveInfo.chance >= settings.threshold) {
+                            // If on hospital and block early discharge is enabled, and patient is early discharge, block it
+                            if (settings.blockEarlyDischarge && reviveInfo.isEarlyDischarge) {
+                                continue; // Skip to the next visible one
+                            }
+
+                            // Otherwise, click Yes
+                            isConfirming = true;
+                            yesButton.click();
+
+                            setTimeout(resetConfirming, 500);
+                            return; // Return early since we found and clicked a valid one
+                        }
+                    }
+                }
+            }
+        } else {
+            // Profile logic
+            const yesButton = document.querySelector('.confirm-action-yes') || document.querySelector('.confirm-action'); // Try both generic selectors
+            if (yesButton) {
+                const reviveInfo = getReviveInfo(document.body);
+                if (reviveInfo.chance !== null && reviveInfo.chance >= settings.threshold) {
+                    isConfirming = true;
+                    yesButton.click();
+
+                    setTimeout(resetConfirming, 500);
+                }
+            }
+        }
+    }
+
+    // Function to create a button for setting the success threshold
+    function createSettingsUI() {
+        if (isHospital) {
+            // Add to hospital page msg-info-wrap
+            const waitForElm = (selector) => {
+                return new Promise(resolve => {
+                    if (document.querySelector(selector)) return resolve(document.querySelector(selector));
+                    const observer = new MutationObserver(mutations => {
+                        if (document.querySelector(selector)) {
+                            observer.disconnect();
+                            resolve(document.querySelector(selector));
+                        }
+                    });
+                    observer.observe(document.body, { childList: true, subtree: true });
+                });
+            };
+
+            waitForElm('.msg-info-wrap').then((msgItemWrap) => {
+                if (msgItemWrap.querySelector('.fast-revives-container')) return;
+
+                const container = document.createElement('div');
+                container.classList.add('fast-revives-container');
+                container.style.display = 'flex';
+                container.style.alignItems = 'center';
+                container.style.gap = '15px';
+                container.style.marginTop = '10px';
+
+                // Threshold Button
+                const p = document.createElement('p');
+                p.textContent = `Set FastRevive Threshold (${settings.threshold}%)`;
+                p.style.cursor = 'pointer';
+                p.style.color = 'var(--default-blue-color)';
+                p.style.fontWeight = 'bold';
+
+                p.addEventListener('click', () => {
+                    const newThreshold = prompt('Enter the success threshold (as a percentage):', settings.threshold);
+                    if (newThreshold !== null) {
+                        const parsedValue = parseFloat(newThreshold);
+                        if (!isNaN(parsedValue) && parsedValue >= 0 && parsedValue <= 100) {
+                            settings.threshold = parsedValue;
+                            saveSettings();
+                            p.textContent = `Set FastRevive Threshold (${settings.threshold}%)`;
+                            alert(`Success threshold updated to ${settings.threshold}%`);
+                        } else {
+                            alert('Invalid input. Please enter a number between 0 and 100.');
+                        }
+                    }
+                });
+
+                // Early Discharge Toggle
+                const toggleText = document.createElement('p');
+                toggleText.textContent = `Block Early Discharge: ${settings.blockEarlyDischarge ? 'ON' : 'OFF'}`;
+                toggleText.style.cursor = 'pointer';
+                toggleText.style.color = 'var(--default-blue-color)';
+                toggleText.style.fontWeight = 'bold';
+
+                toggleText.addEventListener('click', () => {
+                    settings.blockEarlyDischarge = !settings.blockEarlyDischarge;
+                    saveSettings();
+                    toggleText.textContent = `Block Early Discharge: ${settings.blockEarlyDischarge ? 'ON' : 'OFF'}`;
+                });
+
+                container.appendChild(p);
+                container.appendChild(toggleText);
+                msgItemWrap.appendChild(container);
+
+                // Observe msgItemWrap changes to re-add if needed
+                const msgObserver = new MutationObserver(() => {
+                    if (!msgItemWrap.querySelector('.fast-revives-container')) {
+                        msgItemWrap.appendChild(container);
+                    }
+                });
+                msgObserver.observe(msgItemWrap, { childList: true, subtree: true });
+            });
+
+        } else {
+            // Profile page logic
+            const actionsText = document.querySelector('.title-black');
+            if (actionsText) {
+                const button = document.createElement('button');
+                button.textContent = `Set Revive Threshold (${settings.threshold}%)`;
+                button.style.marginLeft = '10px';
+                button.style.cursor = 'pointer';
+                button.style.color = '#FF0000';
+
+                button.addEventListener('click', () => {
+                    const newThreshold = prompt('Enter the success threshold (as a percentage):', settings.threshold);
+                    if (newThreshold !== null) {
+                        const parsedValue = parseFloat(newThreshold);
+                        if (!isNaN(parsedValue) && parsedValue >= 0 && parsedValue <= 100) {
+                            settings.threshold = parsedValue;
+                            saveSettings();
+                            button.textContent = `Set Revive Threshold (${settings.threshold}%)`;
+                            alert(`Success threshold updated to ${settings.threshold}%`);
+                        } else {
+                            alert('Invalid input. Please enter a number between 0 and 100.');
+                        }
+                    }
+                });
+                actionsText.parentNode.insertBefore(button, actionsText.nextSibling);
+            }
+        }
+    }
+
+    // Observe DOM changes — when the confirmation dialog appears, auto-confirm if above threshold
+    let debounceTimer;
+
+    const observer = new MutationObserver((mutations) => {
+        clearTimeout(debounceTimer);
+
+        debounceTimer = setTimeout(() => {
+            autoConfirmRevive(mutations);
+        }, 50);
+    });
+
+    // Profile-only revive triggering
+    if (!isHospital) {
+        // Check if the page was opened by the gateway (URL contains #autorevive)
+        const isAutoRevive = window.location.hash.includes('autorevive');
+
+        if (isAutoRevive) {
+            // Fix #6: Strip the hash immediately so F5/refresh won't re-trigger
+            history.replaceState(null, '', window.location.pathname + window.location.search);
+
+            // Minimum account age (in days) required for auto-revive.
+            // Parse from hash (e.g. #autorevive=250), default to 365 if missing or invalid.
+            let MIN_AGE_DAYS = 365;
+            const hashMatch = window.location.hash.match(/autorevive=(\d+)/);
+            if (hashMatch) {
+                const parsedAge = parseInt(hashMatch[1], 10);
+                if (!isNaN(parsedAge) && parsedAge > 0) {
+                    MIN_AGE_DAYS = parsedAge;
+                }
+            }
+
+            // Parse the player's age from the profile page.
+            // Two strategies to support profiles with or without TornTools:
+            //   1. TornTools: .tt-age-text → "7 years 5 months", "1 month 28 days"
+            //   2. Native Torn: .box-info.age .digit → individual digit divs showing raw day count
+            // Returns the age in days, or null if it can't be determined.
+            const getPlayerAgeDays = () => {
+                // Strategy 1: TornTools human-readable age text
+                const ttAge = document.querySelector('.tt-age-text');
+                if (ttAge) {
+                    const text = ttAge.textContent.trim();
+                    let totalDays = 0;
+                    let matched = false;
+
+                    const years = text.match(/(\d+)\s*year/i);
+                    const months = text.match(/(\d+)\s*month/i);
+                    const days = text.match(/(\d+)\s*day/i);
+
+                    if (years) { totalDays += parseInt(years[1], 10) * 365; matched = true; }
+                    if (months) { totalDays += parseInt(months[1], 10) * 30; matched = true; }
+                    if (days) { totalDays += parseInt(days[1], 10); matched = true; }
+
+                    if (matched) return totalDays;
+                }
+
+                // Strategy 2: Native Torn digit display (raw day count as individual digits)
+                // DOM: .box-info.age → .box-value → .digit divs each containing one digit
+                const ageBox = document.querySelector('.box-info.age');
+                if (ageBox) {
+                    const digits = ageBox.querySelectorAll('.digit');
+                    let numStr = '';
+                    digits.forEach(d => { numStr += d.textContent.trim(); });
+                    const parsed = parseInt(numStr, 10);
+                    if (!isNaN(parsed)) return parsed;
+                }
+
+                return null;
+            };
+
+            const clickReviveButton = (revButton) => {
+                // Fix #5: Small delay to let Torn's JS bind event handlers to the button
+                setTimeout(() => {
+                    // Check player age before auto-reviving
+                    const ageDays = getPlayerAgeDays();
+                    if (ageDays !== null && ageDays < MIN_AGE_DAYS) {
+                        // Newbie player — skip auto-revive, R key still works for manual override
+                        console.log(`[FastRevive] Skipped auto-revive — player age ${ageDays} days is under ${MIN_AGE_DAYS} day minimum.`);
+                        return;
+                    }
+
+                    revButton.click();
+                }, 150);
+            };
+
+            const existingButton = document.querySelector('.profile-button-revive');
+            if (existingButton) {
+                clickReviveButton(existingButton);
+            } else {
+                // Wait for the revive button to appear in the DOM
+                const autoReviveObserver = new MutationObserver(() => {
+                    const revButton = document.querySelector('.profile-button-revive');
+                    if (revButton) {
+                        autoReviveObserver.disconnect();
+                        clickReviveButton(revButton);
+                    }
+                });
+                autoReviveObserver.observe(document.body, { childList: true, subtree: true });
+
+                // Fix #1: Timeout — disconnect observer after 10s if button never appears
+                // (player already revived, not in hospital, etc.)
+                setTimeout(() => {
+                    autoReviveObserver.disconnect();
+                    console.log('[FastRevive] Auto-revive timed out — revive button not found.');
+                }, 10000);
+            }
+        }
+
+        // 'R' key always available as manual trigger (for retries or normal browsing)
+        document.addEventListener('keydown', (event) => {
+            //Check if user is typing, and block revive attempt if so. Thanks Dobre [3944280] for this fix!
+            const active = document.activeElement;
+            const isTyping = active && (
+                active.tagName === 'INPUT' ||
+                active.tagName === 'TEXTAREA' ||
+                active.isContentEditable
+            );
+            if (isTyping) return;
+
+            if (event.key.toLowerCase() === 'r' && !event.repeat) {
+                const revButton = document.querySelector('.profile-button-revive');
+                if (revButton) {
+                    revButton.click();
+                }
+            }
+        });
+    }
+
+    // Start observing the page for changes
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // Initial setup
+    createSettingsUI();
+})();
