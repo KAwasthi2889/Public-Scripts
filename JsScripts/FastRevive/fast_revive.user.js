@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fast Revives
 // @namespace    http://tampermonkey.net/
-// @version      3.3.2
+// @version      3.4.0
 // @description  Attempts to auto-confirm revives based on user-defined success chance threshold on profile and hospital pages. Auto closes the tab. Supports blocking early discharge revives on hospital. Returns success for succesful revive or reason for failed revive.
 // @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
@@ -10,7 +10,8 @@
 // @downloadURL  https://raw.githubusercontent.com/KAwasthi2889/Public-Scripts/main/JsScripts/FastRevive/fast_revive.user.js
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=torn.com
 // @license      MIT
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      127.0.0.1
 // ==/UserScript==
 
 (function () {
@@ -22,16 +23,20 @@
     let gatewayXid = null;
     const resetConfirming = () => { isConfirming = false; };
 
-    function logToGateway(status, reason) {
-        if (cbport && gatewayXid) {
-            const url = `http://127.0.0.1:${cbport}/revive?xid=${gatewayXid}&status=${status}&reason=${encodeURIComponent(reason)}`;
-            fetch(url, {
-                mode: 'no-cors',
-                keepalive: true
-            }).catch(e => {
-                console.error("[FastRevive] Fetch blocked or failed, falling back to Image:", e);
-                new Image().src = url;
-            });
+    function logToGateway(status, reason, overrideXid = null) {
+        const xid = overrideXid || gatewayXid;
+        if (cbport && xid) {
+            const url = `http://127.0.0.1:${cbport}/revive?xid=${xid}&status=${status}&reason=${encodeURIComponent(reason)}`;
+            if (typeof GM_xmlhttpRequest !== "undefined") {
+                GM_xmlhttpRequest({
+                    method: "GET",
+                    url: url,
+                    onload: () => console.log(`[FastRevive] Callback fired to port ${cbport}: status=${status}`),
+                    onerror: (e) => console.error("[FastRevive] GM_xmlhttpRequest failed:", e)
+                });
+            } else {
+                console.error("[FastRevive] Fatal: GM_xmlhttpRequest not granted!");
+            }
         }
     }
 
@@ -102,15 +107,8 @@
 
                     if (cbport && xid) {
                         const status = isSuccess ? 'success' : 'fail';
-                        const reason = isSuccess ? '' : encodeURIComponent(text);
-                        fetch(`http://127.0.0.1:${cbport}/revive?xid=${xid}&status=${status}&reason=${reason}`, {
-                            mode: 'no-cors',
-                            keepalive: true
-                        }).catch(e => {
-                            console.error("[FastRevive] Fetch error:", e);
-                            logToGateway('fail', 'Fetch error: ' + e.message);
-                        });
-                        console.log(`[FastRevive] Callback fired to port ${cbport}: status=${status}`);
+                        const reason = isSuccess ? '' : text;
+                        logToGateway(status, reason, xid);
                     }
 
                     successFound = true;
