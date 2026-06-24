@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fast Revives
 // @namespace    http://tampermonkey.net/
-// @version      3.3.0
+// @version      3.3.1
 // @description  Attempts to auto-confirm revives based on user-defined success chance threshold on profile and hospital pages. Auto closes the tab. Supports blocking early discharge revives on hospital. Returns success for succesful revive or reason for failed revive.
 // @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
@@ -360,6 +360,15 @@
             };
 
             const clickReviveButton = (revButton) => {
+                // Check if the player has revives disabled
+                if (revButton.classList.contains('disabled') || revButton.classList.contains('cross')) {
+                    const msg = '[FastRevive] Revives are disabled for this player.';
+                    console.log(msg);
+                    logToGateway('fail', msg);
+                    setTimeout(() => window.close(), 1000); // Close tab almost immediately
+                    return;
+                }
+
                 // Fix #5: Small delay to let Torn's JS bind event handlers to the button
                 setTimeout(() => {
                     // Check player age before auto-reviving
