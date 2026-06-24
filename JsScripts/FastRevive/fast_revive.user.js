@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fast Revives
 // @namespace    http://tampermonkey.net/
-// @version      3.4.1
+// @version      3.5.0
 // @description  Attempts to auto-confirm revives based on user-defined success chance threshold on profile and hospital pages. Auto closes the tab. Supports blocking early discharge revives on hospital. Returns success for succesful revive or reason for failed revive.
 // @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
@@ -26,16 +26,23 @@
     function logToGateway(status, reason, overrideXid = null) {
         const xid = overrideXid || gatewayXid;
         if (cbport && xid) {
-            const url = `http://127.0.0.1:${cbport}/revive?xid=${xid}&status=${status}&reason=${encodeURIComponent(reason)}`;
+            const url = `http://127.0.0.1:${cbport}/revive?xid=${xid}&status=${status}&reason=${encodeURIComponent(reason)}&_t=${Date.now()}`;
             if (typeof GM_xmlhttpRequest !== "undefined") {
                 GM_xmlhttpRequest({
                     method: "GET",
                     url: url,
-                    onload: () => console.log(`[FastRevive] Callback fired to port ${cbport}: status=${status}`),
-                    onerror: (e) => console.error("[FastRevive] GM_xmlhttpRequest failed:", e)
+                    onload: () => {
+                        console.log(`[FastRevive] Callback fired to port ${cbport}: status=${status}`);
+                        if (isAutoReviveTab) window.close();
+                    },
+                    onerror: (e) => {
+                        console.error("[FastRevive] GM_xmlhttpRequest failed:", e);
+                        if (isAutoReviveTab) window.close();
+                    }
                 });
             } else {
                 console.error("[FastRevive] Fatal: GM_xmlhttpRequest not granted!");
+                if (isAutoReviveTab) window.close();
             }
         }
     }
@@ -94,8 +101,6 @@
             if (xid) gatewayXid = xid;
 
             let successFound = false;
-            // Close the tab 10s from now regardless of success/failure
-            setTimeout(() => window.close(), 10000);
 
             const successObserver = new MutationObserver((m, obs) => {
                 // Look for the specific Torn response container
@@ -121,7 +126,7 @@
 
             successObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
 
-            // Stop observing after 9 seconds if not found (just before tab closes)
+            // Stop observing after 9 seconds if not found
             setTimeout(() => {
                 successObserver.disconnect();
                 if (!successFound) {
@@ -163,15 +168,21 @@
             const yesButton = document.querySelector('.confirm-action-yes') || document.querySelector('.confirm-action'); // Try both generic selectors
             if (yesButton) {
                 const reviveInfo = getReviveInfo(document.body);
-                if (reviveInfo.chance !== null && reviveInfo.chance >= settings.threshold) {
-                    isConfirming = true;
-                    yesButton.click();
+                if (reviveInfo.chance !== null) {
+                    if (reviveInfo.chance >= settings.threshold) {
+                        isConfirming = true;
+                        yesButton.click();
 
-                    if (isAutoReviveTab) {
-                        watchForSuccessAndClose();
+                        if (isAutoReviveTab) {
+                            watchForSuccessAndClose();
+                        }
+
+                        setTimeout(resetConfirming, 500);
+                    } else if (isAutoReviveTab) {
+                        logToGateway('fail', `[FastRevive] Skipped auto-revive — chance ${reviveInfo.chance}% is below threshold ${settings.threshold}%.`);
                     }
-
-                    setTimeout(resetConfirming, 500);
+                } else if (isAutoReviveTab) {
+                    logToGateway('fail', '[FastRevive] Could not determine success chance.');
                 }
             }
         }
@@ -303,9 +314,6 @@
         if (isAutoReviveTab) {
             gatewayXid = new URLSearchParams(window.location.search).get("XID");
 
-            // Master fallback timeout: close tab after 30s no matter what
-            setTimeout(() => window.close(), 30000);
-
             // Fix #6: Strip the hash immediately so F5/refresh won't re-trigger
             history.replaceState(null, '', window.location.pathname + window.location.search);
 
@@ -316,7 +324,6 @@
             }
 
             // Minimum account age (in days) required for auto-revive.
-            // Parse from hash (e.g. #autorevive=250), default to 365 if missing or invalid.
             let MIN_AGE_DAYS = 365;
             const hashMatch = savedHash.match(/autorevive=(\d+)/);
             if (hashMatch) {
@@ -326,13 +333,7 @@
                 }
             }
 
-            // Parse the player's age from the profile page.
-            // Two strategies to support profiles with or without TornTools:
-            //   1. TornTools: .tt-age-text → "7 years 5 months", "1 month 28 days"
-            //   2. Native Torn: .box-info.age .digit → individual digit divs showing raw day count
-            // Returns the age in days, or null if it can't be determined.
             const getPlayerAgeDays = () => {
-                // Strategy 1: TornTools human-readable age text
                 const ttAge = document.querySelector('.tt-age-text');
                 if (ttAge) {
                     const text = ttAge.textContent.trim();
@@ -350,8 +351,6 @@
                     if (matched) return totalDays;
                 }
 
-                // Strategy 2: Native Torn digit display (raw day count as individual digits)
-                // DOM: .box-info.age → .box-value → .digit divs each containing one digit
                 const ageBox = document.querySelector('.box-info.age');
                 if (ageBox) {
                     const digits = ageBox.querySelectorAll('.digit');
@@ -367,10 +366,10 @@
             const clickReviveButton = (revButton) => {
                 // Check if the player has revives disabled
                 if (revButton.classList.contains('disabled') || revButton.classList.contains('cross')) {
-                    const msg = '[FastRevive] Revives are disabled for this player.';
-                    console.log(msg);
-                    logToGateway('fail', msg);
-                    setTimeout(() => window.close(), 1000); // Close tab almost immediately
+                    if (isAutoReviveTab && gatewayXid) {
+                        const msg = '[FastRevive] Revive button is disabled (target may be travelling, dead, or already reviving).';
+                        logToGateway('fail', msg);
+                    }
                     return;
                 }
 
@@ -379,11 +378,9 @@
                     // Check player age before auto-reviving
                     const ageDays = getPlayerAgeDays();
                     if (ageDays !== null && ageDays < MIN_AGE_DAYS) {
-                        // Newbie player — skip auto-revive, R key still works for manual override
                         const msg = `[FastRevive] Skipped auto-revive — player age ${ageDays} days is under ${MIN_AGE_DAYS} day minimum.`;
                         console.log(msg);
                         logToGateway('fail', msg);
-                        setTimeout(() => window.close(), 10000); // Close tab after 10s
                         return;
                     }
 
@@ -395,24 +392,25 @@
             if (existingButton) {
                 clickReviveButton(existingButton);
             } else {
+                let autoReviveTimeout;
+
                 // Wait for the revive button to appear in the DOM
                 const autoReviveObserver = new MutationObserver(() => {
                     const revButton = document.querySelector('.profile-button-revive');
                     if (revButton) {
                         autoReviveObserver.disconnect();
+                        if (autoReviveTimeout) clearTimeout(autoReviveTimeout);
                         clickReviveButton(revButton);
                     }
                 });
                 autoReviveObserver.observe(document.body, { childList: true, subtree: true });
 
                 // Fix #1: Timeout — disconnect observer after 10s if button never appears
-                // (player already revived, not in hospital, etc.)
-                setTimeout(() => {
+                autoReviveTimeout = setTimeout(() => {
                     autoReviveObserver.disconnect();
                     const msg = '[FastRevive] Auto-revive timed out — revive button not found.';
                     console.log(msg);
                     logToGateway('fail', msg);
-                    setTimeout(() => window.close(), 1000); // Give TM time to dispatch callback before closing
                 }, 10000);
             }
         }
