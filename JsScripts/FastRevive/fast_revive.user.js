@@ -24,10 +24,14 @@
 
     function logToGateway(status, reason) {
         if (cbport && gatewayXid) {
-            fetch(`http://127.0.0.1:${cbport}/revive?xid=${gatewayXid}&status=${status}&reason=${encodeURIComponent(reason)}`, {
+            const url = `http://127.0.0.1:${cbport}/revive?xid=${gatewayXid}&status=${status}&reason=${encodeURIComponent(reason)}`;
+            fetch(url, {
                 mode: 'no-cors',
                 keepalive: true
-            }).catch(() => { });
+            }).catch(e => {
+                console.error("[FastRevive] Fetch blocked or failed, falling back to Image:", e);
+                new Image().src = url;
+            });
         }
     }
 
