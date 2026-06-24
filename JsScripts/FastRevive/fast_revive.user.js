@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fast Revives
 // @namespace    http://tampermonkey.net/
-// @version      3.2.1
+// @version      3.3.0
 // @description  Attempts to auto-confirm revives based on user-defined success chance threshold on profile and hospital pages. Auto closes the tab. Supports blocking early discharge revives on hospital. Returns success for succesful revive or reason for failed revive.
 // @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
@@ -19,7 +19,17 @@
     let isConfirming = false;
     let isAutoReviveTab = false;
     let cbport = null;
+    let gatewayXid = null;
     const resetConfirming = () => { isConfirming = false; };
+
+    function logToGateway(status, reason) {
+        if (cbport && gatewayXid) {
+            fetch(`http://127.0.0.1:${cbport}/revive?xid=${gatewayXid}&status=${status}&reason=${encodeURIComponent(reason)}`, {
+                mode: 'no-cors',
+                keepalive: true
+            }).catch(() => { });
+        }
+    }
 
     // Default settings with safe parsing
     let settings = {
@@ -72,6 +82,7 @@
 
             // Extract XID from URL to send back to the gateway
             const xid = new URLSearchParams(window.location.search).get("XID");
+            if (xid) gatewayXid = xid;
 
             let successFound = false;
             // Close the tab 10s from now regardless of success/failure
@@ -80,18 +91,24 @@
             const successObserver = new MutationObserver((m, obs) => {
                 // Look for the specific Torn response container
                 const responseTextEl = document.querySelector('.profile-buttons-dialog .center-block .text');
-                
+
                 if (responseTextEl) {
                     const text = responseTextEl.textContent.trim();
                     const isSuccess = responseTextEl.classList.contains('t-green') || text.includes('successfully revived');
-                    
+
                     if (cbport && xid) {
                         const status = isSuccess ? 'success' : 'fail';
                         const reason = isSuccess ? '' : encodeURIComponent(text);
-                        new Image().src = `http://localhost:${cbport}/revive?xid=${xid}&status=${status}&reason=${reason}`;
+                        fetch(`http://127.0.0.1:${cbport}/revive?xid=${xid}&status=${status}&reason=${reason}`, {
+                            mode: 'no-cors',
+                            keepalive: true
+                        }).catch(e => {
+                            console.error("[FastRevive] Fetch error:", e);
+                            logToGateway('fail', 'Fetch error: ' + e.message);
+                        });
                         console.log(`[FastRevive] Callback fired to port ${cbport}: status=${status}`);
                     }
-                    
+
                     successFound = true;
                     obs.disconnect();
                 }
@@ -99,13 +116,15 @@
 
             successObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
 
-            // Stop observing after 5 seconds if not found
+            // Stop observing after 9 seconds if not found (just before tab closes)
             setTimeout(() => {
                 successObserver.disconnect();
                 if (!successFound) {
-                    console.log('[FastRevive] Success message not found within 5s.');
+                    const msg = '[FastRevive] Success message not found within 9s.';
+                    console.log(msg);
+                    logToGateway('fail', msg);
                 }
-            }, 5000);
+            }, 9000);
         };
 
         if (isHospital) {
@@ -142,7 +161,7 @@
                 if (reviveInfo.chance !== null && reviveInfo.chance >= settings.threshold) {
                     isConfirming = true;
                     yesButton.click();
-                    
+
                     if (isAutoReviveTab) {
                         watchForSuccessAndClose();
                     }
@@ -272,11 +291,13 @@
     if (!isHospital) {
         // Fix hash bug: save hash before modifying history
         const savedHash = window.location.hash;
-        
+
         // Check if the page was opened by the gateway (URL contains #autorevive)
         isAutoReviveTab = savedHash.includes('autorevive');
 
         if (isAutoReviveTab) {
+            gatewayXid = new URLSearchParams(window.location.search).get("XID");
+
             // Master fallback timeout: close tab after 30s no matter what
             setTimeout(() => window.close(), 30000);
 
@@ -345,7 +366,9 @@
                     const ageDays = getPlayerAgeDays();
                     if (ageDays !== null && ageDays < MIN_AGE_DAYS) {
                         // Newbie player — skip auto-revive, R key still works for manual override
-                        console.log(`[FastRevive] Skipped auto-revive — player age ${ageDays} days is under ${MIN_AGE_DAYS} day minimum.`);
+                        const msg = `[FastRevive] Skipped auto-revive — player age ${ageDays} days is under ${MIN_AGE_DAYS} day minimum.`;
+                        console.log(msg);
+                        logToGateway('fail', msg);
                         setTimeout(() => window.close(), 10000); // Close tab after 10s
                         return;
                     }
@@ -372,7 +395,9 @@
                 // (player already revived, not in hospital, etc.)
                 setTimeout(() => {
                     autoReviveObserver.disconnect();
-                    console.log('[FastRevive] Auto-revive timed out — revive button not found.');
+                    const msg = '[FastRevive] Auto-revive timed out — revive button not found.';
+                    console.log(msg);
+                    logToGateway('fail', msg);
                     window.close(); // Close immediately if button never appeared
                 }, 10000);
             }
