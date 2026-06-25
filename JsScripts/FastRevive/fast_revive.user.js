@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Helper
 // @namespace    http://tampermonkey.net/
-// @version      3.7.0
+// @version      3.7.1
 // @description  Event-driven auto-revives based on success chance and player status. Communicates with local Go Discord Gateway to log successes, manage quotas, and auto-close tabs.
 // @author       Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
@@ -134,7 +134,12 @@
                 }
             });
 
-            successObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+            const dialogTarget = document.querySelector('.profile-buttons-dialog');
+            if (dialogTarget) {
+                successObserver.observe(dialogTarget, { childList: true, subtree: true, characterData: true });
+            } else {
+                successObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+            }
 
             // Stop observing after 9 seconds if not found
             setTimeout(() => {
@@ -177,7 +182,8 @@
             // Profile logic
             const yesButton = document.querySelector('.confirm-action-yes') || document.querySelector('.confirm-action'); // Try both generic selectors
             if (yesButton) {
-                const reviveInfo = getReviveInfo(document.body);
+                const dialog = document.querySelector('.profile-buttons-dialog');
+                const reviveInfo = getReviveInfo(dialog || document.body);
                 if (reviveInfo.chance !== null) {
                     const effectiveThreshold = minChanceOverride !== null ? Math.max(settings.threshold, minChanceOverride) : settings.threshold;
                     if (reviveInfo.chance >= effectiveThreshold) {
@@ -566,7 +572,9 @@
     }
 
     // Start observing the page for changes
-    observer.observe(document.body, { childList: true, subtree: true });
+    const rootTarget = isHospital ? document.querySelector('.user-info-list-wrap') : document.getElementById('profileroot');
+    const safeTarget = rootTarget || document.body;
+    observer.observe(safeTarget, { childList: true, subtree: true });
 
     // Initial setup
     createSettingsUI();
