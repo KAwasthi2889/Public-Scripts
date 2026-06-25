@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Torn Fast Revives (Discord Gateway)
+// @name         Torn Revive Helper
 // @namespace    http://tampermonkey.net/
-// @version      3.6.0
-// @description  Auto-confirms revives based on success chance and player status. Communicates directly with the local Go Discord Gateway to log successes, manage daily quotas, and auto-close tabs.
-// @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
+// @version      3.7.0
+// @description  Event-driven auto-revives based on success chance and player status. Communicates with local Go Discord Gateway to log successes, manage quotas, and auto-close tabs.
+// @author       Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
 // @match        https://www.torn.com/hospitalview.php*
 // @updateURL    https://raw.githubusercontent.com/KAwasthi2889/Public-Scripts/main/JsScripts/FastRevive/fast_revive.user.js
@@ -420,35 +420,17 @@
             };
 
             const clickReviveButton = () => {
-                let attemptsLeft = 10; // 15 seconds / 1.5s = 10 attempts
-
-                const tryClick = () => {
-                    const revButton = document.querySelector('.profile-button-revive');
-                    if (!revButton) {
-                        if (isAutoReviveTab && gatewayXid) {
-                            const specificError = getPlayerStateError();
-                            const msg = specificError ? `[FastRevive] ${specificError}` : '[FastRevive] Revive button disappeared while waiting.';
-                            logToGateway('fail', msg);
-                        }
-                        return;
+                const revButton = document.querySelector('.profile-button-revive');
+                if (!revButton) {
+                    if (isAutoReviveTab && gatewayXid) {
+                        const specificError = getPlayerStateError();
+                        const msg = specificError ? `[FastRevive] ${specificError}` : '[FastRevive] Revive button disappeared while waiting.';
+                        logToGateway('fail', msg);
                     }
+                    return;
+                }
 
-                    // Check if the player has revives disabled
-                    if (revButton.classList.contains('disabled') || revButton.classList.contains('cross')) {
-                        if (attemptsLeft > 0) {
-                            attemptsLeft--;
-                            setTimeout(tryClick, 1500);
-                            return;
-                        }
-
-                        if (isAutoReviveTab && gatewayXid) {
-                            const specificError = getPlayerStateError();
-                            const msg = specificError ? `[FastRevive] ${specificError}` : '[FastRevive] Revive button remained disabled for 15s.';
-                            logToGateway('fail', msg);
-                        }
-                        return;
-                    }
-
+                const executeClick = () => {
                     // Fix #5: Small delay to let Torn's JS bind event handlers to the button
                     setTimeout(() => {
                         // Check required player status (Online/Offline/Away)
@@ -480,7 +462,36 @@
                     }, 150);
                 };
 
-                tryClick();
+                // Check if the player has revives disabled
+                if (revButton.classList.contains('disabled') || revButton.classList.contains('cross')) {
+                    console.log("[FastRevive] Revive button is disabled. Watching for it to become active...");
+                    let disabledTimeout;
+
+                    const disabledObserver = new MutationObserver(() => {
+                        if (!revButton.classList.contains('disabled') && !revButton.classList.contains('cross')) {
+                            console.log("[FastRevive] Button became active! Clicking now.");
+                            disabledObserver.disconnect();
+                            clearTimeout(disabledTimeout);
+                            executeClick();
+                        }
+                    });
+
+                    disabledObserver.observe(revButton, { attributes: true, attributeFilter: ['class'] });
+
+                    // 15 second timeout if the button never becomes active
+                    disabledTimeout = setTimeout(() => {
+                        disabledObserver.disconnect();
+                        if (isAutoReviveTab && gatewayXid) {
+                            const specificError = getPlayerStateError();
+                            const msg = specificError ? `[FastRevive] ${specificError}` : '[FastRevive] Revive button remained disabled for 15s.';
+                            logToGateway('fail', msg);
+                        }
+                    }, 15000);
+
+                    return;
+                }
+
+                executeClick();
             };
 
             const existingButton = document.querySelector('.profile-button-revive');
@@ -489,16 +500,39 @@
             } else {
                 let autoReviveTimeout;
 
-                // Wait for the revive button to appear in the DOM
+                const targetContainer = document.querySelector('.profile-buttons')
+                    || document.querySelector('.profile-right-wrapper')
+                    || document.querySelector('.profile-wrapper')
+                    || document.getElementById('profileroot')
+                    || document.body;
+
+                let buttonsListFound = false;
+
+                // Wait for the revive button or .buttons-list to appear in the DOM
                 const autoReviveObserver = new MutationObserver(() => {
-                    const revButton = document.querySelector('.profile-button-revive');
-                    if (revButton) {
+                    if (buttonsListFound) return;
+
+                    const buttonsList = document.querySelector('.buttons-list');
+                    if (buttonsList) {
+                        buttonsListFound = true;
                         autoReviveObserver.disconnect();
                         if (autoReviveTimeout) clearTimeout(autoReviveTimeout);
-                        clickReviveButton();
+
+                        const revButton = buttonsList.querySelector('.profile-button-revive');
+                        if (revButton) {
+                            clickReviveButton();
+                        } else {
+                            // Early termination: buttons list loaded, but no revive button
+                            if (isAutoReviveTab && gatewayXid) {
+                                const specificError = getPlayerStateError();
+                                const msg = specificError ? `[FastRevive] ${specificError}` : '[FastRevive] Target is not in the hospital.';
+                                console.log(msg);
+                                logToGateway('fail', msg);
+                            }
+                        }
                     }
                 });
-                autoReviveObserver.observe(document.body, { childList: true, subtree: true });
+                autoReviveObserver.observe(targetContainer, { childList: true, subtree: true });
 
                 // Fix #1: Timeout — disconnect observer after 10s if button never appears
                 autoReviveTimeout = setTimeout(() => {
