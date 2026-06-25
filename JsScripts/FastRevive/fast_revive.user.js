@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Fast Revives
+// @name         Torn Fast Revives (Discord Gateway)
 // @namespace    http://tampermonkey.net/
-// @version      3.5.0
-// @description  Attempts to auto-confirm revives based on user-defined success chance threshold on profile and hospital pages. Auto closes the tab. Supports blocking early discharge revives on hospital. Returns success for succesful revive or reason for failed revive.
+// @version      3.6.0
+// @description  Auto-confirms revives based on success chance and player status. Communicates directly with the local Go Discord Gateway to log successes, manage daily quotas, and auto-close tabs.
 // @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
 // @match        https://www.torn.com/hospitalview.php*
@@ -12,6 +12,8 @@
 // @license      MIT
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
+// @connect      localhost
+// @run-at       document-idle
 // ==/UserScript==
 
 (function () {
@@ -21,6 +23,8 @@
     let isAutoReviveTab = false;
     let cbport = null;
     let gatewayXid = null;
+    let minChanceOverride = null;
+    let requiredStatus = null;
     const resetConfirming = () => { isConfirming = false; };
 
     function logToGateway(status, reason, overrideXid = null) {
@@ -169,7 +173,8 @@
             if (yesButton) {
                 const reviveInfo = getReviveInfo(document.body);
                 if (reviveInfo.chance !== null) {
-                    if (reviveInfo.chance >= settings.threshold) {
+                    const effectiveThreshold = minChanceOverride !== null ? Math.max(settings.threshold, minChanceOverride) : settings.threshold;
+                    if (reviveInfo.chance >= effectiveThreshold) {
                         isConfirming = true;
                         yesButton.click();
 
@@ -179,7 +184,7 @@
 
                         setTimeout(resetConfirming, 500);
                     } else if (isAutoReviveTab) {
-                        logToGateway('fail', `[FastRevive] Skipped auto-revive — chance ${reviveInfo.chance}% is below threshold ${settings.threshold}%.`);
+                        logToGateway('fail', `[FastRevive] Skipped auto-revive — chance ${reviveInfo.chance}% is below effective threshold ${effectiveThreshold}%.`);
                     }
                 } else if (isAutoReviveTab) {
                     logToGateway('fail', '[FastRevive] Could not determine success chance.');
@@ -333,6 +338,21 @@
                 }
             }
 
+            // Parse minChance override
+            const minChanceMatch = savedHash.match(/minChance=(\d+)/);
+            if (minChanceMatch) {
+                const parsedChance = parseInt(minChanceMatch[1], 10);
+                if (!isNaN(parsedChance) && parsedChance >= 0) {
+                    minChanceOverride = parsedChance;
+                }
+            }
+
+            // Parse required status
+            const statusMatch = savedHash.match(/status=([^&]+)/);
+            if (statusMatch) {
+                requiredStatus = decodeURIComponent(statusMatch[1]).toUpperCase();
+            }
+
             const getPlayerAgeDays = () => {
                 const ttAge = document.querySelector('.tt-age-text');
                 if (ttAge) {
@@ -375,6 +395,22 @@
 
                 // Fix #5: Small delay to let Torn's JS bind event handlers to the button
                 setTimeout(() => {
+                    // Check required player status (Online/Offline/Away)
+                    if (requiredStatus && requiredStatus !== 'ANY') {
+                        const statusIcon = document.querySelector('li[class*="user-status-16-"]');
+                        let currentStatus = "UNKNOWN";
+                        if (statusIcon) {
+                            const match = statusIcon.className.match(/user-status-16-([a-zA-Z]+)/);
+                            if (match) currentStatus = match[1].toUpperCase();
+                        }
+                        if (currentStatus !== requiredStatus) {
+                            const msg = `[FastRevive] Skipped auto-revive — player is ${currentStatus}, but contract requires ${requiredStatus}.`;
+                            console.log(msg);
+                            logToGateway('fail', msg);
+                            return;
+                        }
+                    }
+
                     // Check player age before auto-reviving
                     const ageDays = getPlayerAgeDays();
                     if (ageDays !== null && ageDays < MIN_AGE_DAYS) {
