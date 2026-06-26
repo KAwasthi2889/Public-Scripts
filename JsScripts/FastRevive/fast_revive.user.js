@@ -1,55 +1,25 @@
 // ==UserScript==
-// @name         Torn Revive Helper
+// @name         Torn Fast Revive Manual
 // @namespace    http://tampermonkey.net/
-// @version      3.7.1
-// @description  Event-driven auto-revives based on success chance and player status. Communicates with local Go Discord Gateway to log successes, manage quotas, and auto-close tabs.
-// @author       Ever2889 [4040971]
+// @version      3.8.0
+// @description  Manual Revives based on success chance and player status. Supports hospital view auto-confirm.
+// @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
 // @match        https://www.torn.com/hospitalview.php*
-// @updateURL    https://raw.githubusercontent.com/KAwasthi2889/Public-Scripts/main/JsScripts/FastRevive/fast_revive.user.js
-// @downloadURL  https://raw.githubusercontent.com/KAwasthi2889/Public-Scripts/main/JsScripts/FastRevive/fast_revive.user.js
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=torn.com
 // @license      MIT
-// @grant        GM_xmlhttpRequest
-// @connect      127.0.0.1
-// @connect      localhost
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    let isConfirming = false;
-    let isAutoReviveTab = false;
-    let cbport = null;
-    let gatewayXid = null;
-    let minChanceOverride = null;
-    let requiredStatus = null;
-    const resetConfirming = () => { isConfirming = false; };
-
-    function logToGateway(status, reason, overrideXid = null) {
-        const xid = overrideXid || gatewayXid;
-        if (cbport && xid) {
-            const url = `http://127.0.0.1:${cbport}/revive?xid=${xid}&status=${status}&reason=${encodeURIComponent(reason)}&_t=${Date.now()}`;
-            if (typeof GM_xmlhttpRequest !== "undefined") {
-                GM_xmlhttpRequest({
-                    method: "GET",
-                    url: url,
-                    onload: () => {
-                        console.log(`[FastRevive] Callback fired to port ${cbport}: status=${status}`);
-                        if (isAutoReviveTab) window.close();
-                    },
-                    onerror: (e) => {
-                        console.error("[FastRevive] GM_xmlhttpRequest failed:", e);
-                        if (isAutoReviveTab) window.close();
-                    }
-                });
-            } else {
-                console.error("[FastRevive] Fatal: GM_xmlhttpRequest not granted!");
-                if (isAutoReviveTab) window.close();
-            }
-        }
+    if (window.location.hash.includes('autorevive')) {
+        return; // Let reviver.user.js handle gateway tabs
     }
+
+    let isConfirming = false;
+    const resetConfirming = () => { isConfirming = false; };
 
     // Default settings with safe parsing
     let settings = {
@@ -63,7 +33,6 @@
         }
     } catch (e) {
         console.warn('[FastRevive] Corrupted settings found in localStorage. Reverting to defaults.', e);
-        // Overwrite the corrupted data
         localStorage.setItem('fastReviveSettings', JSON.stringify(settings));
     }
 
@@ -73,21 +42,17 @@
 
     const isHospital = window.location.href.includes("hospitalview.php");
 
-    // Utility function to parse success chance and early discharge info from a specific container
     function getReviveInfo(container = document.body) {
-        // Find the active confirm dialog text
         let pageText = "";
         const confirmDialog = container.querySelector('.confirm-revive');
 
         if (confirmDialog) {
             pageText = confirmDialog.innerText || confirmDialog.textContent;
         } else {
-            // Precise fallback for profile dialogs (avoids reading the whole document.body)
             const textEl = container.querySelector('.profile-buttons-dialog .text') || container.querySelector('div.text');
             if (textEl) {
                 pageText = textEl.textContent || textEl.innerText;
             } else {
-                // Last resort if Torn changes their UI again
                 pageText = container.innerText || container.textContent;
             }
         }
@@ -99,62 +64,10 @@
         return { chance, isEarlyDischarge };
     }
 
-    // Automatically click "Yes" if the success chance meets the threshold and early discharge rules
-    function autoConfirmRevive(mutations) {
+    function autoConfirmRevive() {
         if (isConfirming) return;
 
-        const watchForSuccessAndClose = () => {
-            if (!isAutoReviveTab) return;
-
-            // Extract XID from URL to send back to the gateway
-            const xid = new URLSearchParams(window.location.search).get("XID");
-            if (xid) gatewayXid = xid;
-
-            let successFound = false;
-
-            const successObserver = new MutationObserver((m, obs) => {
-                // Look for the specific Torn response container
-                const responseTextEl = document.querySelector('.profile-buttons-dialog .center-block .text');
-
-                if (responseTextEl) {
-                    const text = responseTextEl.textContent.trim();
-                    if (text.includes("chance of success")) {
-                        return; // Ignore the initial probability prompt
-                    }
-                    const isSuccess = responseTextEl.classList.contains('t-green') || text.includes('successfully revived');
-
-                    if (cbport && xid) {
-                        const status = isSuccess ? 'success' : 'fail';
-                        const reason = isSuccess ? '' : text;
-                        logToGateway(status, reason, xid);
-                    }
-
-                    successFound = true;
-                    obs.disconnect();
-                }
-            });
-
-            const dialogTarget = document.querySelector('.profile-buttons-dialog');
-            if (dialogTarget) {
-                successObserver.observe(dialogTarget, { childList: true, subtree: true, characterData: true });
-            } else {
-                successObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
-            }
-
-            // Stop observing after 9 seconds if not found
-            setTimeout(() => {
-                successObserver.disconnect();
-                if (!successFound) {
-                    const msg = '[FastRevive] Success message not found within 9s.';
-                    console.log(msg);
-                    logToGateway('fail', msg);
-                }
-            }, 9000);
-        };
-
         if (isHospital) {
-            // On hospital, we need to find which list item opened the confirmation
-            // The MutationObserver triggers when the dialog is shown. We look for a visible .confirm-revive
             const listItems = document.querySelectorAll('.user-info-list-wrap li');
             for (const li of listItems) {
                 const confirmRevive = li.querySelector('.confirm-revive');
@@ -163,52 +76,37 @@
                     if (yesButton) {
                         const reviveInfo = getReviveInfo(li);
                         if (reviveInfo.chance !== null && reviveInfo.chance >= settings.threshold) {
-                            // If on hospital and block early discharge is enabled, and patient is early discharge, block it
                             if (settings.blockEarlyDischarge && reviveInfo.isEarlyDischarge) {
-                                continue; // Skip to the next visible one
+                                continue;
                             }
 
-                            // Otherwise, click Yes
                             isConfirming = true;
                             yesButton.click();
 
                             setTimeout(resetConfirming, 500);
-                            return; // Return early since we found and clicked a valid one
+                            return;
                         }
                     }
                 }
             }
         } else {
-            // Profile logic
-            const yesButton = document.querySelector('.confirm-action-yes') || document.querySelector('.confirm-action'); // Try both generic selectors
+            const yesButton = document.querySelector('.confirm-action-yes') || document.querySelector('.confirm-action');
             if (yesButton) {
                 const dialog = document.querySelector('.profile-buttons-dialog');
                 const reviveInfo = getReviveInfo(dialog || document.body);
                 if (reviveInfo.chance !== null) {
-                    const effectiveThreshold = minChanceOverride !== null ? Math.max(settings.threshold, minChanceOverride) : settings.threshold;
-                    if (reviveInfo.chance >= effectiveThreshold) {
+                    if (reviveInfo.chance >= settings.threshold) {
                         isConfirming = true;
                         yesButton.click();
-
-                        if (isAutoReviveTab) {
-                            watchForSuccessAndClose();
-                        }
-
                         setTimeout(resetConfirming, 500);
-                    } else if (isAutoReviveTab) {
-                        logToGateway('fail', `[FastRevive] Skipped auto-revive — chance ${reviveInfo.chance}% is below effective threshold ${effectiveThreshold}%.`);
                     }
-                } else if (isAutoReviveTab) {
-                    logToGateway('fail', '[FastRevive] Could not determine success chance.');
                 }
             }
         }
     }
 
-    // Function to create a button for setting the success threshold
     function createSettingsUI() {
         if (isHospital) {
-            // Add to hospital page msg-info-wrap
             const waitForElm = (selector) => {
                 return new Promise(resolve => {
                     if (document.querySelector(selector)) return resolve(document.querySelector(selector));
@@ -232,7 +130,6 @@
                 container.style.gap = '15px';
                 container.style.marginTop = '10px';
 
-                // Threshold Button
                 const p = document.createElement('p');
                 p.textContent = `Set FastRevive Threshold (${settings.threshold}%)`;
                 p.style.cursor = 'pointer';
@@ -254,7 +151,6 @@
                     }
                 });
 
-                // Early Discharge Toggle
                 const toggleText = document.createElement('p');
                 toggleText.textContent = `Block Early Discharge: ${settings.blockEarlyDischarge ? 'ON' : 'OFF'}`;
                 toggleText.style.cursor = 'pointer';
@@ -271,7 +167,6 @@
                 container.appendChild(toggleText);
                 msgItemWrap.appendChild(container);
 
-                // Observe msgItemWrap changes to re-add if needed
                 const msgObserver = new MutationObserver(() => {
                     if (!msgItemWrap.querySelector('.fast-revives-container')) {
                         msgItemWrap.appendChild(container);
@@ -281,7 +176,6 @@
             });
 
         } else {
-            // Profile page logic
             const actionsText = document.querySelector('.title-black');
             if (actionsText) {
                 const button = document.createElement('button');
@@ -309,251 +203,16 @@
         }
     }
 
-    // Observe DOM changes — when the confirmation dialog appears, auto-confirm if above threshold
     let debounceTimer;
-
     const observer = new MutationObserver((mutations) => {
         clearTimeout(debounceTimer);
-
         debounceTimer = setTimeout(() => {
-            autoConfirmRevive(mutations);
+            autoConfirmRevive();
         }, 50);
     });
 
-    // Profile-only revive triggering
     if (!isHospital) {
-        // Fix hash bug: save hash before modifying history
-        const savedHash = window.location.hash;
-
-        // Check if the page was opened by the gateway (URL contains #autorevive)
-        isAutoReviveTab = savedHash.includes('autorevive');
-
-        if (isAutoReviveTab) {
-            gatewayXid = new URLSearchParams(window.location.search).get("XID");
-
-            // Fix #6: Strip the hash immediately so F5/refresh won't re-trigger
-            history.replaceState(null, '', window.location.pathname + window.location.search);
-
-            // Parse callback port
-            const portMatch = savedHash.match(/cbport=(\d+)/);
-            if (portMatch) {
-                cbport = parseInt(portMatch[1], 10);
-            }
-
-            // Minimum account age (in days) required for auto-revive.
-            let MIN_AGE_DAYS = 365;
-            const hashMatch = savedHash.match(/autorevive=(\d+)/);
-            if (hashMatch) {
-                const parsedAge = parseInt(hashMatch[1], 10);
-                if (!isNaN(parsedAge) && parsedAge > 0) {
-                    MIN_AGE_DAYS = parsedAge;
-                }
-            }
-
-            // Parse minChance override
-            const minChanceMatch = savedHash.match(/minChance=(\d+)/);
-            if (minChanceMatch) {
-                const parsedChance = parseInt(minChanceMatch[1], 10);
-                if (!isNaN(parsedChance) && parsedChance >= 0) {
-                    minChanceOverride = parsedChance;
-                }
-            }
-
-            // Parse required status
-            const statusMatch = savedHash.match(/status=([^&]+)/);
-            if (statusMatch) {
-                requiredStatus = decodeURIComponent(statusMatch[1]).toUpperCase();
-            }
-
-            const getPlayerAgeDays = () => {
-                const ttAge = document.querySelector('.tt-age-text');
-                if (ttAge) {
-                    const text = ttAge.textContent.trim();
-                    let totalDays = 0;
-                    let matched = false;
-
-                    const years = text.match(/(\d+)\s*year/i);
-                    const months = text.match(/(\d+)\s*month/i);
-                    const days = text.match(/(\d+)\s*day/i);
-
-                    if (years) { totalDays += parseInt(years[1], 10) * 365; matched = true; }
-                    if (months) { totalDays += parseInt(months[1], 10) * 30; matched = true; }
-                    if (days) { totalDays += parseInt(days[1], 10); matched = true; }
-
-                    if (matched) return totalDays;
-                }
-
-                const ageBox = document.querySelector('.box-info.age');
-                if (ageBox) {
-                    const digits = ageBox.querySelectorAll('.digit');
-                    let numStr = '';
-                    digits.forEach(d => { numStr += d.textContent.trim(); });
-                    const parsed = parseInt(numStr, 10);
-                    if (!isNaN(parsed)) return parsed;
-                }
-
-                return null;
-            };
-
-            const getPlayerStateError = () => {
-                const descEl = document.querySelector('.main-desc');
-                if (!descEl) return null;
-
-                const text = descEl.textContent.trim().toLowerCase();
-
-                if (text.includes("traveling")) {
-                    return "Not in a hospital, Travelling";
-                }
-
-                if (text === "okay") {
-                    return "User is not in hospital anymore";
-                }
-
-                if (text.includes("hospital")) {
-                    // "in hospital for" -> Torn
-                    // "in a british hospital" -> Foreign
-                    if (text.startsWith("in a ") && text.includes("hospital")) {
-                        return "User is in a different country's hospital";
-                    }
-                    return null; // They are in Torn hospital, the generic disabled message will apply
-                }
-
-                if (text.startsWith("hiding out in") || text.startsWith("in ")) {
-                    return "Not in Hospital, In a different country";
-                }
-
-                return null;
-            };
-
-            const clickReviveButton = () => {
-                const revButton = document.querySelector('.profile-button-revive');
-                if (!revButton) {
-                    if (isAutoReviveTab && gatewayXid) {
-                        const specificError = getPlayerStateError();
-                        const msg = specificError ? `[FastRevive] ${specificError}` : '[FastRevive] Revive button disappeared while waiting.';
-                        logToGateway('fail', msg);
-                    }
-                    return;
-                }
-
-                const executeClick = () => {
-                    // Fix #5: Small delay to let Torn's JS bind event handlers to the button
-                    setTimeout(() => {
-                        // Check required player status (Online/Offline/Away)
-                        if (requiredStatus && requiredStatus !== 'ANY') {
-                            const statusIcon = document.querySelector('li[class*="user-status-16-"]');
-                            let currentStatus = "UNKNOWN";
-                            if (statusIcon) {
-                                const match = statusIcon.className.match(/user-status-16-([a-zA-Z]+)/);
-                                if (match) currentStatus = match[1].toUpperCase();
-                            }
-                            if (currentStatus !== requiredStatus) {
-                                const msg = `[FastRevive] Skipped auto-revive — player is ${currentStatus}, but contract requires ${requiredStatus}.`;
-                                console.log(msg);
-                                logToGateway('fail', msg);
-                                return;
-                            }
-                        }
-
-                        // Check player age before auto-reviving
-                        const ageDays = getPlayerAgeDays();
-                        if (ageDays !== null && ageDays < MIN_AGE_DAYS) {
-                            const msg = `[FastRevive] Skipped auto-revive — player age ${ageDays} days is under ${MIN_AGE_DAYS} day minimum.`;
-                            console.log(msg);
-                            logToGateway('fail', msg);
-                            return;
-                        }
-
-                        revButton.click();
-                    }, 150);
-                };
-
-                // Check if the player has revives disabled
-                if (revButton.classList.contains('disabled') || revButton.classList.contains('cross')) {
-                    console.log("[FastRevive] Revive button is disabled. Watching for it to become active...");
-                    let disabledTimeout;
-
-                    const disabledObserver = new MutationObserver(() => {
-                        if (!revButton.classList.contains('disabled') && !revButton.classList.contains('cross')) {
-                            console.log("[FastRevive] Button became active! Clicking now.");
-                            disabledObserver.disconnect();
-                            clearTimeout(disabledTimeout);
-                            executeClick();
-                        }
-                    });
-
-                    disabledObserver.observe(revButton, { attributes: true, attributeFilter: ['class'] });
-
-                    // 15 second timeout if the button never becomes active
-                    disabledTimeout = setTimeout(() => {
-                        disabledObserver.disconnect();
-                        if (isAutoReviveTab && gatewayXid) {
-                            const specificError = getPlayerStateError();
-                            const msg = specificError ? `[FastRevive] ${specificError}` : '[FastRevive] Revive button remained disabled for 15s.';
-                            logToGateway('fail', msg);
-                        }
-                    }, 15000);
-
-                    return;
-                }
-
-                executeClick();
-            };
-
-            const existingButton = document.querySelector('.profile-button-revive');
-            if (existingButton) {
-                clickReviveButton();
-            } else {
-                let autoReviveTimeout;
-
-                const targetContainer = document.querySelector('.profile-buttons')
-                    || document.querySelector('.profile-right-wrapper')
-                    || document.querySelector('.profile-wrapper')
-                    || document.getElementById('profileroot')
-                    || document.body;
-
-                let buttonsListFound = false;
-
-                // Wait for the revive button or .buttons-list to appear in the DOM
-                const autoReviveObserver = new MutationObserver(() => {
-                    if (buttonsListFound) return;
-
-                    const buttonsList = document.querySelector('.buttons-list');
-                    if (buttonsList) {
-                        buttonsListFound = true;
-                        autoReviveObserver.disconnect();
-                        if (autoReviveTimeout) clearTimeout(autoReviveTimeout);
-
-                        const revButton = buttonsList.querySelector('.profile-button-revive');
-                        if (revButton) {
-                            clickReviveButton();
-                        } else {
-                            // Early termination: buttons list loaded, but no revive button
-                            if (isAutoReviveTab && gatewayXid) {
-                                const specificError = getPlayerStateError();
-                                const msg = specificError ? `[FastRevive] ${specificError}` : '[FastRevive] Target is not in the hospital.';
-                                console.log(msg);
-                                logToGateway('fail', msg);
-                            }
-                        }
-                    }
-                });
-                autoReviveObserver.observe(targetContainer, { childList: true, subtree: true });
-
-                // Fix #1: Timeout — disconnect observer after 10s if button never appears
-                autoReviveTimeout = setTimeout(() => {
-                    autoReviveObserver.disconnect();
-                    const specificError = getPlayerStateError();
-                    const msg = specificError ? `[FastRevive] ${specificError}` : '[FastRevive] Auto-revive timed out — revive button not found.';
-                    console.log(msg);
-                    logToGateway('fail', msg);
-                }, 10000);
-            }
-        }
-
-        // 'R' key always available as manual trigger (for retries or normal browsing)
         document.addEventListener('keydown', (event) => {
-            //Check if user is typing, and block revive attempt if so. Thanks Dobre [3944280] for this fix!
             const active = document.activeElement;
             const isTyping = active && (
                 active.tagName === 'INPUT' ||
@@ -571,11 +230,9 @@
         });
     }
 
-    // Start observing the page for changes
     const rootTarget = isHospital ? document.querySelector('.user-info-list-wrap') : document.getElementById('profileroot');
     const safeTarget = rootTarget || document.body;
     observer.observe(safeTarget, { childList: true, subtree: true });
 
-    // Initial setup
     createSettingsUI();
 })();
