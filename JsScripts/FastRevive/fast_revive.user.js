@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Fast Revive Manual
 // @namespace    http://tampermonkey.net/
-// @version      3.8.0
+// @version      3.8.2
 // @description  Manual Revives based on success chance and player status. Supports hospital view auto-confirm.
 // @author       fourzees [3002874] & Dobre [3944280] & Upsilon [3212478] & Ever2889 [4040971]
 // @match        https://www.torn.com/profiles.php*
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    if (window.location.hash.includes('autorevive')) {
+    if (window.location.hash.includes('auto')) {
         return; // Let reviver.user.js handle gateway tabs
     }
 
